@@ -1,0 +1,721 @@
+---
+title: "Stats 415: Final Project Code"
+author: Andrew Mashhadi
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Load Libraries
+
+```{r, warning=FALSE, message=FALSE}
+
+library(MASS)
+library(astsa)
+
+```
+
+# Loading Data
+
+```{r}
+
+# import data 
+df <- read.csv('dataset/stackexchangecounts_ts.csv')
+df <- df[-c(1, 2, nrow(df)), ] # remove incomplete 2008
+
+# first few rows of data
+head(df)
+
+# summary of data
+summary(df)
+
+# set topic to time-series
+count.dat <- df$tagcount
+
+# create time series objects for train/test split
+xt <- ts(count.dat, start = c(2009, 1), frequency = 12)
+
+trn <- count.dat[1:floor(0.9*length(count.dat))]
+tst <- count.dat[(floor(0.9*length(count.dat))+1):length(count.dat)]
+xt_trn <- ts(trn, start = c(2009, 1), frequency = 12)
+xt_tst <- ts(tst, start = c(2021, 12), frequency = 12)
+
+# create time plot of training data
+ts.plot(xt_trn, 
+        type = "l", 
+        lwd = 2,
+        main = "Monthly \"Time-Series\" Tagged Question Counts",
+        xlab = "Year", 
+        ylab = "Counts")
+grid(lty="solid")
+lines(xt_trn)
+
+
+# acf and pacf, before trend removed
+acf2(xt_trn, max.lag = 20, lwd = 2, 
+     main="Series: \"Time-Series\" Tagged Question Counts")
+
+
+```
+
+
+# Removing trend
+
+```{r}
+
+# fit linear and poly degree 3
+xt_trn_df <- data.frame(time=as.vector(time(xt_trn)), count=as.vector(xt_trn))
+lm.fit <- lm(count ~ time, data=xt_trn_df) # linear
+lm.fit.d3 <- lm(count ~ poly(time, 3), data=xt_trn_df) # poly degree 3
+
+# summarys
+summary(lm.fit)
+summary(lm.fit.d3)
+
+# compare RSS
+anova(lm.fit, lm.fit.d3)
+
+ts.plot(xt_trn, 
+        type = "l", 
+        main = "Monthly \"Time-Series\" Tagged Question Counts",
+        xlab = "Year", 
+        ylab = "Counts",
+        lwd=2)
+grid(lty="solid")
+lines(xt_trn)
+lines(list(x=time(xt_trn), y=lm.fit.d3$fitted.values), 
+      lwd=2, 
+      col="blue")
+legend(2008.7, 220, 
+       legend=c("Raw Counts", "Fitted (Deg. 3)"),
+       col=c("black", "blue"), 
+       lwd=2, 
+       cex=0.8)
+
+# remove trend relationship, show plot
+detrended_xt_trn <- xt_trn - lm.fit.d3$fitted.values 
+ts.plot(detrended_xt_trn, 
+        main = "Monthly \"Time-Series\" Question Counts Detrended",
+        xlab = "Year", 
+        ylab = "Detrended Residuals", 
+        type = "l",
+        lwd=2) 
+grid(lty="solid")
+lines(detrended_xt_trn)
+
+
+
+```
+
+
+# Spectral Analysis
+
+```{r, fig.height=6}
+
+par(mfrow=c(2, 1))
+
+# investigate trend/cycles
+dat.spec <- mvspec(detrended_xt_trn, log="no", taper=0, 
+                   main="Series: Detrended Training Data | Raw Periodogram | taper = 0", 
+                   lwd=2)
+
+# non-parametric
+dat.spec.sm.np <- mvspec(detrended_xt_trn, 
+                         kernel("modified.daniell", c(2, 2)), # not a large set of data points
+                         taper=0.2,
+                         log="no", 
+                         main="Series: Detrended Training Data | Smoothed Periodogram | taper = 0.2", 
+                         lwd=2)
+
+# find min ar order that minimizes the training RMSE 
+n <- length(detrended_xt_trn)
+RMSE <- rep(0, 30)
+for (k in 1:30){
+  
+  resid <- ar(detrended_xt_trn, order=k, aic=FALSE)$resid
+  RMSE[k] <- sqrt(mean(resid^2, na.rm=TRUE))
+
+}
+
+plot(RMSE, type="o", xlab="p", ylab="Training RMSE", 
+     main="Tuning AR(p) Fit with RMSE",
+     lwd=2)
+grid(lty="solid")
+lines(RMSE, lwd=2)
+
+# parametric
+dat.spec.sm.p <- spec.ar(detrended_xt_trn, order=15, log="no", 
+                         main="Series: Detrended Training Data | AR(15) Spectrum")
+axis(1, at = seq(0, 6, by=0.5), tck = 1, col = "lightgrey", labels=FALSE, lty = "solid")
+axis(2, tck = 1, col = "lightgrey", labels = FALSE, lty = "solid", tick=T)
+axis(1, at = seq(0, 6, by=0.5), tick = TRUE, labels=FALSE)
+axis(2, tick = TRUE, labels=FALSE)
+lines(dat.spec.sm.p$freq, dat.spec.sm.p$spec, lwd=2)
+
+# two-sided confidence intervals
+cat("\nTWO-SIDED CONFIDENCE INTERVALS\n")
+df <- dat.spec.sm.np$df 
+U <- qchisq(.025, df) 
+L <- qchisq(.975, df) 
+cat("For peak at freq =", dat.spec.sm.np$freq[4], 
+    "has the approximate two-sided CI: [", df*dat.spec.sm.np$spec[4]/L, ",", 
+    df*dat.spec.sm.np$spec[4]/U, "]\n")
+cat("For peak at freq =", dat.spec.sm.np$freq[13], 
+    "has the approximate two-sided CI: [", df*dat.spec.sm.np$spec[13]/L, ",", 
+    df*dat.spec.sm.np$spec[13]/U, "]\n")
+cat("For peak at freq =", dat.spec.sm.np$freq[39], 
+    "has the approximate two-sided CI: [", df*dat.spec.sm.np$spec[39]/L, ",", 
+    df*dat.spec.sm.np$spec[39]/U, "]\n")
+
+
+# one-sided confidence intervals
+cat("\nONE-SIDED CONFIDENCE INTERVALS\n")
+L <- qchisq(.95, df) 
+cat("For peak at freq =", dat.spec.sm.np$freq[4], 
+    "has the approximate one-sided CI: [", df*dat.spec.sm.np$spec[4]/L, 
+    ", inf ]\n")
+cat("For peak at freq =", dat.spec.sm.np$freq[13], 
+    "has the approximate one-sided CI: [", df*dat.spec.sm.np$spec[13]/L,
+    ", inf ]\n")
+cat("For peak at freq =", dat.spec.sm.np$freq[39], 
+    "has the approximate one-sided CI: [", df*dat.spec.sm.np$spec[39]/L, 
+    ", inf ]\n")
+
+
+```
+
+
+We now visualize the annual cycle with a few example years.
+
+
+```{r, fig.align='center', fig.height=9, fig.width=6}
+
+# set up 4x1 block of plots 
+months <- c("J", "F", "M", "A", "M", "J", "J", "A", "S", "O", "N", "D")
+par(mfrow=c(4, 1))
+
+
+# setup plot 
+years.f2009 <- 5
+t1 <- 12*years.f2009 + 1
+t2 <- t1 + 11
+
+plot(time(detrended_xt_trn)[t1:t2], detrended_xt_trn[t1:t2], 
+     type = "c", xlab = "", ylab = "", xaxt = 'n', lwd=2,
+     main = "Detrended Residuals Throughout 2014") 
+points(time(detrended_xt_trn)[t1:t2], detrended_xt_trn[t1:t2], pch = months, col = 1:4)
+
+# setup plot 
+years.f2009 <- 6
+t1 <- 12*years.f2009 + 1
+t2 <- t1 + 11
+
+plot(time(detrended_xt_trn)[t1:t2], detrended_xt_trn[t1:t2], 
+     type = "c", xlab = "", ylab = "", xaxt = 'n', lwd=2,
+     main = "Detrended Residuals Throughout 2015") 
+points(time(detrended_xt_trn)[t1:t2], detrended_xt_trn[t1:t2], pch = months, col = 1:4)
+
+
+# setup plot 
+years.f2009 <- 7
+t1 <- 12*years.f2009 + 1
+t2 <- t1 + 11
+
+plot(time(detrended_xt_trn)[t1:t2], detrended_xt_trn[t1:t2], 
+     type = "c", xlab = "", ylab = "", xaxt = 'n', lwd=2,
+     main = "Detrended Residuals Throughout 2016") 
+points(time(detrended_xt_trn)[t1:t2], detrended_xt_trn[t1:t2], pch = months, col = 1:4)
+
+# setup plot 
+years.f2009 <- 8
+t1 <- 12*years.f2009 + 1
+t2 <- t1 + 11
+
+plot(time(detrended_xt_trn)[t1:t2], detrended_xt_trn[t1:t2], 
+     type = "c", xlab = "", ylab = "", xaxt = 'n', lwd=2,
+     main = "Detrended Residuals Throughout 2017") 
+points(time(detrended_xt_trn)[t1:t2], detrended_xt_trn[t1:t2], pch = months, col = 1:4)
+
+```
+
+We now visualize the potential 40 months cycle.
+
+```{r, fig.align='center', fig.height=6, fig.width=6}
+
+# set up 3x1 block of plots 
+par(mfrow=c(3, 1))
+
+ts.plot(detrended_xt_trn[1:40], 
+        type = "l", xlab = "Month", ylab="Detrended Residuals", 
+        lwd = 2,
+        main = "Detrended Residuals Throughout from 2009-2012") 
+
+ts.plot(detrended_xt_trn[41:80], 
+        type = "l", xlab = "Month", ylab="Detrended Residuals",
+        lwd = 2, 
+        main = "Detrended Residuals Throughout from 2012-2015") 
+
+ts.plot(detrended_xt_trn[81:120], 
+        type = "l", xlab = "Month", ylab="Detrended Residuals",
+        lwd = 2, 
+        main = "Detrended Residuals Throughout from 2015-2019") 
+```
+
+
+# Removing Cycles
+
+Now we display the average annual cycle, and attempt to remove it.
+
+```{r, warning=FALSE, message=FALSE, fig.height=7}
+
+par(mfrow=c(2, 1))
+ann.matrix <- matrix(detrended_xt_trn, byrow = TRUE, ncol = 12) 
+ann.matrix[13, 12] <- NA # incomplete year in training cutoff
+
+monthly_avg <- colMeans(ann.matrix, na.rm = TRUE) 
+plot(1:12, monthly_avg, xlab = "Month", ylab = "Mean Value", 
+     type = "o", 
+     lwd=2, 
+     main="Annual Cycle Average")
+grid(lty="solid")
+lines(1:12, monthly_avg, lwd = 2)
+
+## Now remove this cycle and show the residuals. 
+final_xt_trn <- detrended_xt_trn - monthly_avg
+
+
+ts.plot(final_xt_trn, xlab = "Year", 
+        ylab = "Remaining Residuals",
+        main = "Detrended & Annual Cycle Removed", 
+        type = "l", 
+        lwd=2) 
+grid(lty="solid")
+lines(final_xt_trn, lwd = 2)
+
+
+par(mfrow=c(1, 1))
+# assess new spectrum
+mvspec(final_xt_trn, 
+      kernel("modified.daniell", c(2, 2)), # not a large set of data points
+      taper=0.2,
+      log="no", 
+      lwd = 2)
+
+```
+
+
+Now we display the average 4 month cycle, and attempt to remove it.
+
+
+```{r, warning=FALSE, message=FALSE, fig.height=7}
+
+par(mfrow=c(2, 1))
+four.month.matrix <- matrix(final_xt_trn, byrow = TRUE, ncol = 4) 
+four.month.matrix[39, 4] <- NA # incomplete year in training cutoff
+
+four.month.avg <- colMeans(four.month.matrix, na.rm = TRUE) 
+plot(1:4, four.month.avg, 
+     xlab = "# Month out of the Four", 
+     ylab = "Mean Detrended Count",
+     main = "Four-Month Cycle Average",
+     type = "o", 
+     lwd=2)
+grid(lty="solid")
+lines(1:4, four.month.avg, lwd = 2)
+
+## Now remove this cycle and show the residuals. 
+final_xt_trn <- final_xt_trn - four.month.avg
+
+ts.plot(final_xt_trn, xlab = "Year", 
+        ylab = "Remaining Residuals",
+        main = "Detrended & Annual, Four-Month Cycles Removed", 
+        type = "l", 
+        lwd=2) 
+grid(lty="solid")
+lines(final_xt_trn, lwd = 2)
+
+
+par(mfrow=c(1, 1))
+# assess new spectrum
+mvspec(final_xt_trn, 
+      kernel("modified.daniell", c(2, 2)), # not a large set of data points
+      taper=0.2,
+      log="no",
+      lwd = 2)
+```
+
+
+Now we display the average 40 month cycle, and attempt to remove it.
+
+
+```{r, warning=FALSE, message=FALSE, fig.height=7}
+
+par(mfrow=c(2, 1))
+forty.month.matrix <- matrix(final_xt_trn, byrow = TRUE, ncol = 40) 
+forty.month.matrix[4, c(36:40)] <- NA # incomplete year in training cutoff
+
+forty.month.avg <- colMeans(forty.month.matrix, na.rm = TRUE) 
+plot(1:40, forty.month.avg, 
+     xlab = "# Month out of the 40", 
+     ylab = "Mean Detrended Count", 
+     main = "Forty-Month Cycle Average",
+     lwd=2,
+     type = "o")
+grid(lty="solid")
+lines(1:40, forty.month.avg, lwd = 2)
+
+## Now remove this cycle and show the residuals. 
+final_xt_trn <- final_xt_trn - forty.month.avg
+  
+
+ts.plot(final_xt_trn, 
+        xlab = "Year", 
+        ylab = "Remaining Residuals",
+        main = "Detrended & All Cycles Removed", 
+        lwd=2,
+        type = "l") 
+grid(lty="solid")
+lines(final_xt_trn, lwd = 2)
+
+par(mfrow=c(1, 1))
+# assess new spectrum
+mvspec(final_xt_trn, 
+      kernel("modified.daniell", c(2, 2)), # not a large set of data points
+      taper=0.2,
+      log="no", 
+      lwd=2)
+
+```
+
+
+# Estimate New ACF and PACF
+
+
+```{r, warning=FALSE, message=FALSE}
+
+# acf and pacf, before trend removed
+acf2(final_xt_trn, max.lag = 20, 
+     main="Series: Detrended & All Cycles Removed (Final) Residuals", 
+     lwd = 2)
+
+```
+
+
+# Fitting the ARMA Model to Remaining Residuals
+
+Note, the \texttt{arima()} function here uses conditional-sum-of-squares to find starting values, then applies maximum likelihood.
+
+
+```{r, warning=FALSE, message=FALSE}
+
+# loop through all 12x12 settings of ARMA(p, q) and calculate the AICs
+aics <- matrix(0, nrow = 12, ncol = 12) 
+
+for(i in 0:11) {
+  for(j in 0:11) {
+    
+    if (i == 5 & j == 3){ 
+      
+      # issue with non-stationary for this combination of p and q (for CSS)
+      t.arma <- arima(final_xt_trn, order = c(i, 0, j), method = "ML")
+      aics[i+1,j+1] <- t.arma$aic
+      
+    } else {
+      
+      t.arma <- arima(final_xt_trn, order = c(i, 0, j))
+      aics[i+1,j+1] <- t.arma$aic
+    }
+
+    
+  }
+} 
+
+```
+
+
+```{r, warning=FALSE, message=FALSE}
+
+# load library for plot colors
+library(RColorBrewer)
+
+# setup colors
+cols <- brewer.pal(12, "BrBG")
+
+
+## AIC TUNING PLOT
+par(mar=c(5,4,2,7))
+plot(0:11, aics[, 1], 
+     xlab = "AR Order (p)", 
+     ylab = "AIC", 
+     main = "Tuning ARMA(p, q) Grid-Search",
+     type = "l", 
+     lwd = 3,
+     col = cols[1],
+     ylim = c(1197, 1215))
+grid(lty="solid")
+for (r in 1:12) {
+  
+  lines(0:11, aics[, r], 
+        lwd = 3,
+        col = cols[r],
+        type = "l")
+  
+}
+legend("right", inset = c(-0.26,0), legend = 0:11, xpd = NA, 
+       title = "MA Order (q)", col = cols, lty = 1, bty = "n", lwd=3)
+points(3, min(aics), col="red", lwd=4, pch=19)
+
+
+```
+
+
+Now we re-fit the optimal ARMA(3, 8) model and display associated diagnostic plots and fitted coefficients (with full summary).
+
+
+```{r}
+
+# use sarima to get the diagnostics
+sarima(final_xt_trn, p = 3, q = 8, d = 0)
+
+# fit arima using regular arima model (same coefficients were found)
+arma.mod <- arima(final_xt_trn, order=c(3, 0, 8))
+
+# display coefficients and summary
+arma.mod$coef
+
+```
+
+
+We now assess our model's fit to the training data. In addition, we display the associated AIC and training RMSE score.
+
+
+```{r, warning=FALSE, message=FALSE}
+
+# load library
+library(forecast)
+
+# overlay fitted to final residuals training data
+ts.plot(final_xt_trn, 
+        type = "l", 
+        main = "Detrended + Cycles Removed Residuals with ARMA(3, 8) Fit",
+        xlab = "Year", 
+        ylab = "Detrended + Cycles Removed Residuals")
+grid(lty="solid")
+lines(final_xt_trn, lwd=2)
+lines(list(x=time(final_xt_trn), y=fitted(arma.mod)), 
+      lwd=2, 
+      col="red")
+legend("topleft", cex = 1, c("Actual", "Predicted"), 
+       lty = 1, col = c("black", "red"), lwd=2)
+
+
+# output AIC and training RMSE for residuals
+cat("FOR RESIDUALS\n")
+cat("AIC:", arma.mod$aic, " | RMSE:", sqrt(mean(arma.mod$residuals^2)), "\n\n")
+
+# convert back to counts
+trn.count.preds <- fitted(arma.mod) + monthly_avg + four.month.avg + 
+                   forty.month.avg + lm.fit.d3$fitted.values
+
+# overlay fitted to final residuals training data
+ts.plot(xt_trn, 
+        type = "l", 
+        main = "Actual vs Predicted Counts for Training Data",
+        xlab = "Year", 
+        ylab = "Counts", 
+        lwd=2)
+grid(lty="solid")
+lines(xt_trn, lwd=2)
+lines(list(x=time(xt_trn), y=trn.count.preds), 
+      lwd=2, 
+      col="red")
+legend("topleft", cex = 1, c("Actual", "Predicted"), 
+       lty = 1, col = c("black", "red"), lwd=2)
+
+
+# output training RMSE for counts
+cat("FOR COUNTS\n")
+cat("RMSE:", sqrt(mean((xt_trn-trn.count.preds)^2)), "\n\n")
+
+```
+
+
+# Spectrum of Residuals from ARMA(3, 8) Model
+
+
+```{r, warning=FALSE, message=FALSE}
+
+# assess spectrum residuals from ARMA
+arma.res.spec <- mvspec(resid(arma.mod), 
+                        log="no",
+                        main="Series: ARMA(3, 8) Residuals | Smoothed Periodogram | L = 5", 
+                        lwd=2)
+
+# non-parametric
+arma.res.spec.np <- mvspec(resid(arma.mod), 
+                           kernel("modified.daniell", c(2, 2)),
+                           log="no", 
+                           main="Series: ARMA(3, 8) Residuals | Smoothed Periodogram | L = 5", 
+                           lwd=2)
+
+
+```
+
+
+# Testing Performance with trained ARMA(3, 8)
+
+
+```{r, warning=FALSE, message=FALSE, fig.height=5}
+    
+
+## TRAINING + TESTING COUNTS PLOTS 
+
+# convert back to counts (+ cycles + trend)
+tot.cnt.preds <- c(fitted(arma.mod), predict(arma.mod, 17)$pred) + 
+                   monthly_avg + four.month.avg + forty.month.avg + 
+                   predict(lm.fit.d3, data.frame(time=as.vector(time(xt))))
+
+# overlay fitted to final residuals training data
+ts.plot(xt, 
+        type = "l", 
+        main = "Actual vs Predicted Counts for Training + Testing Data",
+        xlab = "Year", 
+        ylab = "Counts")
+grid(lty="solid")
+lines(xt, lwd=2)
+lines(list(x=time(xt), y=tot.cnt.preds), 
+      lwd=2, 
+      col="red")
+rect(xleft=head(time(xt_tst),1), xright=tail(time(xt_tst),1),
+     ybottom=par("usr")[3], ytop=par("usr")[4],
+     density=NA, col = adjustcolor("blue", alpha = 0.15))
+legend("topleft", cex = 1, c("Actual", "Predicted"), 
+       lty = 1, col = c("black", "red"), lwd=2)
+
+
+## ONLY TRAINING DATA PERFORMANCE
+
+trnpreds <- tot.cnt.preds[1:(length(tot.cnt.preds)-18)]
+
+# output training RMSE for counts
+cat("Testing RMSE:", sqrt(mean((xt_trn - trnpreds)^2)), "\n\n")
+
+## ONLY TESTING DATA PERFORMANCE
+
+tstpreds <- tot.cnt.preds[(length(tot.cnt.preds)-17):length(tot.cnt.preds)]
+
+# output testing RMSE for counts
+cat("Testing RMSE:", sqrt(mean((xt_tst - tstpreds)^2)), "\n\n")
+
+```
+
+
+# Making Forecasts Beyond Available Data
+
+
+```{r, warning=FALSE, fig.align='center', fig.height=10, fig.width=8}
+
+# refit trend, and then remove
+xt_df <- data.frame(time=as.vector(time(xt)), count=as.vector(xt))
+t.fit <- lm(count ~ poly(time, 3), data=xt_df) # fit 
+detrended_xt <- xt - t.fit$fitted.values # remove trend
+
+## remove cycles again
+
+ann.matrix <- matrix(detrended_xt, byrow = TRUE, ncol = 12) 
+ann.matrix[15, c(6:12)] <- NA # incomplete year 2023
+monthly_avg <- colMeans(ann.matrix, na.rm = TRUE) 
+
+# remove annual cycle
+final_xt <- detrended_xt - monthly_avg
+
+four.month.matrix <- matrix(final_xt, byrow = TRUE, ncol = 4) 
+four.month.matrix[44, c(2:4)] <- NA # incomplete year 2023
+four.month.avg <- colMeans(four.month.matrix, na.rm = TRUE) 
+
+# remove 4 month cycle
+final_xt <- final_xt - four.month.avg
+
+forty.month.matrix <- matrix(final_xt, byrow = TRUE, ncol = 40) 
+forty.month.matrix[5, c(14:40)] <- NA # incomplete year 2023
+forty.month.avg <- colMeans(forty.month.matrix, na.rm = TRUE) 
+
+# remove 40 month cycle
+final_xt <- final_xt - forty.month.avg
+
+
+# fit arima using regular arima model (same coefficients were found)
+full.arma.mod <- arima(final_xt, order=c(3, 0, 8))
+
+## FORECASTING PLOT
+
+# make forecast
+fore <- predict(full.arma.mod, 36)
+
+fore.preds <- ts(start = c(2023, 1), end = c(2026, 5), frequency = 12)
+fore.preds[-c(1:5)] <- fore$pred
+
+# generate fitted values
+tot.fitted <- fitted(full.arma.mod) + 
+                     monthly_avg + four.month.avg + forty.month.avg + 
+                     fitted(t.fit)
+
+# convert to counts (have to align starting at Jan to recycle with the 
+# averages correctly)
+fore.preds <- fore.preds +
+              monthly_avg + four.month.avg + forty.month.avg + 
+              predict(t.fit, data.frame(time=as.vector(time(fore.preds))))
+
+# remove NAs
+fore.preds <- window(fore.preds, start=c(2023, 6))
+
+# for CI 
+U <- fore.preds + fore$se
+L <- fore.preds - fore$se
+xx <- c(time(U), rev(time(U)))
+yy <- c(L, rev(U))
+
+# overlay fitted to final residuals training data
+par(mfrow=c(2, 1))
+ts.plot(xt, 
+        type = "l", 
+        main = "Actual vs Predicted Counts (w/ Forecasting)",
+        xlab = "Year", 
+        ylab = "Counts", 
+        xlim=c(2009, 2026.3))
+grid(lty="solid")
+lines(xt, lwd=2)
+lines(list(x=time(xt), y=tot.fitted), 
+      lwd=2, 
+      col="red")
+polygon(xx, yy, border = 8, col = gray(.6, alpha = .2))
+lines(list(x=time(fore.preds), y=fore.preds), lwd=2, col="blue")
+legend("topleft", cex = 0.8, c("Actual", "Fitted", "Forecast"), 
+       lty = 1, col = c("black", "red", "blue"), lwd=2)
+
+ts.plot(xt, 
+        type = "l",
+        xlab = "Year", 
+        ylab = "Counts", 
+        main = "Forecast Enhanced",
+        lwd = 2,
+        xlim=c(2021.5, 2026.1), 
+        ylim=c(90, 220))
+grid(lty="solid")
+lines(xt, lwd = 2)
+lines(list(x=time(xt), y=tot.fitted), 
+      lwd=3, 
+      col="red")
+polygon(xx, yy, border = 8, col = gray(.6, alpha = .2))
+lines(list(x=time(fore.preds), y=fore.preds), lwd=2, col="blue")
+legend("topright", cex = 0.8, c("Actual", "Fitted", "Forecast"), 
+       lty = 1, col = c("black", "red", "blue"), lwd=3)
+
+
+
+```
+
